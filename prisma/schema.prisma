@@ -1,0 +1,338 @@
+// PATRÓN: Repository — Prisma queda encapsulado en clases *.repository.ts;
+// los servicios de aplicación no usan PrismaClient directo (RNF27).
+//
+// Modelo basado en docs/modelo-er.md (12 entidades) + 2 entidades técnicas
+// exigidas por RF37 (AuditLog) y RF38 (Notificacion). Los nombres de tabla
+// y columna se mapean a snake_case para mantener la trazabilidad con el
+// diccionario de datos del DERCAS.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enumeraciones (dominios de valores documentados en modelo-er.md + DERCAS 5.13)
+// ---------------------------------------------------------------------------
+
+enum NombreRol {
+  ADMIN
+  PRODUCTOR
+  COMPRADOR
+}
+
+enum EstadoCuenta {
+  ACTIVO
+  SUSPENDIDO
+  BLOQUEADO
+}
+
+enum EstadoMaestro {
+  ACTIVO
+  INACTIVO
+}
+
+enum EstadoProducto {
+  DISPONIBLE
+  AGOTADO
+  RETIRADO
+}
+
+enum EstadoSolicitud {
+  SOLICITADO
+  ACEPTADA
+  RECHAZADA
+  CANCELADA
+}
+
+// 12 estados del diagrama 5.13 del DERCAS (ciclo de vida del Acuerdo Comercial).
+enum EstadoAcuerdo {
+  SOLICITADO
+  ACEPTADO
+  PREPARANDO
+  PROGRAMADO
+  EN_RUTA
+  ENTREGADO_PRODUCTOR
+  CONFIRMADO_COMPRADOR
+  CANCELADO
+  INCIDENCIA
+  RESUELTA_CONFIRMADA
+  RESUELTA_DESCARTADA
+  INCUMPLIDA_POR_TIEMPO
+}
+
+enum EstadoPago {
+  PENDIENTE
+  CONTRA_ENTREGA
+  REALIZADO
+}
+
+enum EstadoFinal {
+  CONFIRMADA
+  INCUMPLIDA
+  CANCELADA
+}
+
+enum TipoReporte {
+  INCONFORMIDAD_CANTIDAD
+  INCONFORMIDAD_CALIDAD
+  INCUMPLIMIENTO_ENTREGA
+  OTRO
+}
+
+enum EstadoReporte {
+  ABIERTO
+  EN_REVISION
+  RESUELTO
+  DESCARTADO
+}
+
+enum TipoNotificacion {
+  SOLICITUD_RECIBIDA
+  SOLICITUD_RECHAZADA
+  ACUERDO_ACEPTADO
+  ACUERDO_TRANSICION
+  ACUERDO_CANCELADO
+  MENSAJE_NUEVO
+  ENTREGA_CONFIRMADA
+  INCIDENCIA_REPORTADA
+  INCIDENCIA_RESUELTA
+  PIN_REINICIADO
+  CUENTA_ESTADO_CAMBIADO
+  ALTA_USUARIO
+}
+
+// ---------------------------------------------------------------------------
+// Entidades de dominio (orden = orden del ER)
+// ---------------------------------------------------------------------------
+
+model Rol {
+  idRol       Int       @id @default(autoincrement()) @map("id_rol")
+  nombre      NombreRol @unique
+  descripcion String?
+  usuarios    Usuario[]
+
+  @@map("rol")
+}
+
+model Usuario {
+  idUsuario           Int          @id @default(autoincrement()) @map("id_usuario")
+  idRol               Int          @map("id_rol")
+  cui                 String       @unique
+  nombreCompleto      String       @map("nombre_completo")
+  telefono            String       @unique
+  direccion           String?
+  pinHash             String       @map("pin_hash")
+  estadoCuenta        EstadoCuenta @default(ACTIVO) @map("estado_cuenta")
+  fechaRegistro       DateTime     @default(now()) @map("fecha_registro")
+  // Campos operacionales requeridos por RF26/RF28 y RNF10/RNF13:
+  mustChangePin       Boolean      @default(true) @map("must_change_pin")
+  pinLength           Int          @default(4) @map("pin_length")
+  pinChangedAt        DateTime?    @map("pin_changed_at")
+  failedLoginAttempts Int          @default(0) @map("failed_login_attempts")
+  lockedUntil         DateTime?    @map("locked_until")
+  motivoEstado        String?      @map("motivo_estado")
+
+  rol                   Rol                  @relation(fields: [idRol], references: [idRol])
+  productos             Producto[]           @relation("ProductosDelProductor")
+  solicitudes           SolicitudCompra[]    @relation("SolicitudesDelComprador")
+  mensajesEnviados      MensajeAcuerdo[]     @relation("MensajesDelRemitente")
+  seguimientosRegistr   SeguimientoEntrega[] @relation("SeguimientosDelUsuario")
+  incidenciasReportadas ReporteIncidencia[]  @relation("IncidenciasDelReportante")
+  notificaciones        Notificacion[]
+  auditoria             AuditLog[]
+
+  @@index([telefono])
+  @@index([estadoCuenta])
+  @@map("usuario")
+}
+
+model CategoriaProducto {
+  idCategoria Int           @id @default(autoincrement()) @map("id_categoria")
+  nombre      String        @unique
+  descripcion String?
+  estado      EstadoMaestro @default(ACTIVO)
+  productos   Producto[]
+
+  @@map("categoria_producto")
+}
+
+model UnidadMedida {
+  idUnidad    Int           @id @default(autoincrement()) @map("id_unidad")
+  nombre      String        @unique
+  abreviatura String        @unique
+  descripcion String?
+  estado      EstadoMaestro @default(ACTIVO)
+  productos   Producto[]
+
+  @@map("unidad_medida")
+}
+
+model Producto {
+  idProducto         Int            @id @default(autoincrement()) @map("id_producto")
+  idProductor        Int            @map("id_productor")
+  idCategoria        Int            @map("id_categoria")
+  idUnidad           Int            @map("id_unidad")
+  nombre             String
+  descripcion        String?
+  cantidadDisponible Decimal        @map("cantidad_disponible") @db.Decimal(12, 2)
+  precioReferencial  Decimal        @map("precio_referencial") @db.Decimal(12, 2)
+  estadoProducto     EstadoProducto @default(DISPONIBLE) @map("estado_producto")
+  fechaPublicacion   DateTime       @default(now()) @map("fecha_publicacion")
+
+  productor   Usuario           @relation("ProductosDelProductor", fields: [idProductor], references: [idUsuario])
+  categoria   CategoriaProducto @relation(fields: [idCategoria], references: [idCategoria])
+  unidad      UnidadMedida      @relation(fields: [idUnidad], references: [idUnidad])
+  solicitudes SolicitudCompra[]
+
+  @@index([estadoProducto])
+  @@index([idProductor])
+  @@index([idCategoria])
+  @@map("producto")
+}
+
+model SolicitudCompra {
+  idSolicitud        Int             @id @default(autoincrement()) @map("id_solicitud")
+  idComprador        Int             @map("id_comprador")
+  idProducto         Int             @map("id_producto")
+  cantidadSolicitada Decimal         @map("cantidad_solicitada") @db.Decimal(12, 2)
+  mensajeInicial     String?         @map("mensaje_inicial")
+  estadoSolicitud    EstadoSolicitud @default(SOLICITADO) @map("estado_solicitud")
+  fechaSolicitud     DateTime        @default(now()) @map("fecha_solicitud")
+  motivoRechazo      String?         @map("motivo_rechazo")
+
+  comprador Usuario           @relation("SolicitudesDelComprador", fields: [idComprador], references: [idUsuario])
+  producto  Producto          @relation(fields: [idProducto], references: [idProducto])
+  acuerdo   AcuerdoComercial?
+
+  @@index([estadoSolicitud])
+  @@map("solicitud_compra")
+}
+
+model PuntoEntrega {
+  idPuntoEntrega Int                @id @default(autoincrement()) @map("id_punto_entrega")
+  nombre         String             @unique
+  descripcion    String?
+  referencia     String?
+  estado         EstadoMaestro      @default(ACTIVO)
+  acuerdos       AcuerdoComercial[]
+
+  @@map("punto_entrega")
+}
+
+model AcuerdoComercial {
+  idAcuerdo                   Int           @id @default(autoincrement()) @map("id_acuerdo")
+  idSolicitud                 Int           @unique @map("id_solicitud")
+  idPuntoEntrega              Int           @map("id_punto_entrega")
+  precioFinal                 Decimal       @map("precio_final") @db.Decimal(12, 2)
+  cantidadAcordada            Decimal       @map("cantidad_acordada") @db.Decimal(12, 2)
+  fechaProgramada             DateTime      @map("fecha_programada")
+  fechaEntregaProductor       DateTime?     @map("fecha_entrega_productor")
+  fechaConfirmacionComprador  DateTime?     @map("fecha_confirmacion_comprador")
+  estadoAcuerdo               EstadoAcuerdo @default(ACEPTADO) @map("estado_acuerdo")
+  estadoPago                  EstadoPago    @default(PENDIENTE) @map("estado_pago")
+  estadoFinal                 EstadoFinal?  @map("estado_final")
+  justificacionIncumplimiento String?       @map("justificacion_incumplimiento")
+  observaciones               String?
+
+  solicitud    SolicitudCompra      @relation(fields: [idSolicitud], references: [idSolicitud])
+  puntoEntrega PuntoEntrega         @relation(fields: [idPuntoEntrega], references: [idPuntoEntrega])
+  seguimientos SeguimientoEntrega[]
+  mensajes     MensajeAcuerdo[]
+  incidencias  ReporteIncidencia[]
+
+  @@index([estadoAcuerdo])
+  @@map("acuerdo_comercial")
+}
+
+model SeguimientoEntrega {
+  idSeguimiento Int           @id @default(autoincrement()) @map("id_seguimiento")
+  idAcuerdo     Int           @map("id_acuerdo")
+  idUsuario     Int           @map("id_usuario")
+  estado        EstadoAcuerdo
+  comentario    String?
+  fechaHora     DateTime      @default(now()) @map("fecha_hora")
+
+  usuario Usuario          @relation("SeguimientosDelUsuario", fields: [idUsuario], references: [idUsuario])
+  acuerdo AcuerdoComercial @relation(fields: [idAcuerdo], references: [idAcuerdo])
+
+  @@index([idAcuerdo])
+  @@map("seguimiento_entrega")
+}
+
+model MensajeAcuerdo {
+  idMensaje   Int      @id @default(autoincrement()) @map("id_mensaje")
+  idAcuerdo   Int      @map("id_acuerdo")
+  idRemitente Int      @map("id_remitente")
+  mensaje     String
+  fechaHora   DateTime @default(now()) @map("fecha_hora")
+
+  acuerdo   AcuerdoComercial @relation(fields: [idAcuerdo], references: [idAcuerdo])
+  remitente Usuario          @relation("MensajesDelRemitente", fields: [idRemitente], references: [idUsuario])
+
+  @@index([idAcuerdo])
+  @@map("mensaje_acuerdo")
+}
+
+model ReporteIncidencia {
+  idReporte     Int           @id @default(autoincrement()) @map("id_reporte")
+  idAcuerdo     Int           @map("id_acuerdo")
+  idReportante  Int           @map("id_reportante")
+  tipo          TipoReporte
+  descripcion   String
+  estadoReporte EstadoReporte @default(ABIERTO) @map("estado_reporte")
+  resolucion    String?
+  fechaReporte  DateTime      @default(now()) @map("fecha_reporte")
+
+  acuerdo    AcuerdoComercial @relation(fields: [idAcuerdo], references: [idAcuerdo])
+  reportante Usuario          @relation("IncidenciasDelReportante", fields: [idReportante], references: [idUsuario])
+
+  @@index([estadoReporte])
+  @@map("reporte_incidencia")
+}
+
+// ---------------------------------------------------------------------------
+// Entidades técnicas exigidas por DERCAS pero no listadas en modelo-er.md
+// ---------------------------------------------------------------------------
+
+// RF37 — Bitácora de auditoría inmutable desde la app.
+model AuditLog {
+  idLog        BigInt   @id @default(autoincrement()) @map("id_log")
+  idUsuario    Int?     @map("id_usuario")
+  accion       String
+  entidad      String
+  entidadId    String?  @map("entidad_id")
+  valorAntes   Json?    @map("valor_antes")
+  valorDespues Json?    @map("valor_despues")
+  ip           String?
+  resultado    String   @default("OK") // OK | DENIED | ERROR
+  fechaHora    DateTime @default(now()) @map("fecha_hora")
+
+  usuario Usuario? @relation(fields: [idUsuario], references: [idUsuario])
+
+  @@index([accion])
+  @@index([entidad])
+  @@index([fechaHora])
+  @@map("audit_log")
+}
+
+// RF38 — Notificaciones in-app por usuario.
+model Notificacion {
+  idNotificacion Int              @id @default(autoincrement()) @map("id_notificacion")
+  idUsuario      Int              @map("id_usuario")
+  tipo           TipoNotificacion
+  titulo         String
+  mensaje        String
+  leida          Boolean          @default(false)
+  payload        Json?
+  fechaCreacion  DateTime         @default(now()) @map("fecha_creacion")
+
+  usuario Usuario @relation(fields: [idUsuario], references: [idUsuario])
+
+  @@index([idUsuario, leida])
+  @@map("notificacion")
+}

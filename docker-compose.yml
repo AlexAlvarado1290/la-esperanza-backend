@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: esperanza-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: esperanza
+      POSTGRES_PASSWORD: esperanza
+      POSTGRES_DB: esperanza
+    ports:
+      - "5432:5432"
+    volumes:
+      - esperanza-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U esperanza"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  esperanza-pgdata:
