@@ -61,8 +61,12 @@ export class UsersService {
     if (!rol) throw new BadRequestException('Rol no encontrado.');
 
     // RNF13 — admin con PIN de 6 dígitos. Resto con 4.
+    // El PIN inicial es ALEATORIO (no "0000") para evitar que un atacante con
+    // el teléfono del usuario adivine la cuenta antes del primer login.
+    // Solo el destinatario lo recibe por SMS; el admin nunca lo ve.
     const pinLength = dto.rol === NombreRol.ADMIN ? 6 : 4;
-    const initialPin = '0'.repeat(pinLength);
+    const max = 10 ** pinLength;
+    const initialPin = String(Math.floor(Math.random() * max)).padStart(pinLength, '0');
     const pinHash = await bcrypt.hash(initialPin, this.bcryptRounds);
 
     const created = await this.admin.create({
@@ -91,8 +95,9 @@ export class UsersService {
 
     return {
       ...this.toPublic(created),
-      pinInicial: initialPin, // visible solo para admin durante el alta
-      mensajeSms: `Se envió un SMS a ${dto.telefono} con el PIN inicial (${initialPin}).`,
+      // No devolvemos el PIN al admin: el usuario es el único que lo recibe
+      // (por SMS). El admin solo confirma que el SMS fue enviado.
+      mensajeSms: `Se envió un SMS a ${dto.telefono} con el PIN inicial. El usuario deberá cambiarlo al primer ingreso.`,
     };
   }
 
@@ -119,14 +124,16 @@ export class UsersService {
     if (target.estadoCuenta === EstadoCuenta.BLOQUEADO) {
       throw new BadRequestException('No se puede reiniciar el PIN de una cuenta bloqueada.');
     }
+    // PIN aleatorio (no "0000") por las mismas razones que en el alta.
     const pinLength = target.rol.nombre === NombreRol.ADMIN ? 6 : 4;
-    const initialPin = '0'.repeat(pinLength);
+    const max = 10 ** pinLength;
+    const initialPin = String(Math.floor(Math.random() * max)).padStart(pinLength, '0');
     const hash = await bcrypt.hash(initialPin, this.bcryptRounds);
     await this.users.updatePin(id, hash, pinLength, true);
 
     await this.sms.sendNotification(
       target.telefono,
-      `Tu PIN fue reiniciado por la Asociación. Inicia sesión con ${initialPin} y cámbialo.`,
+      `Tu PIN fue reiniciado por la Asociacion. Inicia sesion con el codigo que recibiste por SMS y cambialo: ${initialPin}`,
     );
 
     this.events.emit(DomainEvent.UsuarioPinReiniciado, {
@@ -137,7 +144,8 @@ export class UsersService {
       metadata: { idUsuario: id },
     });
 
-    return { message: 'PIN reiniciado', pinInicial: initialPin };
+    // No devolvemos el PIN al admin: el usuario es el único canal autorizado.
+    return { message: 'PIN reiniciado. Se envió un SMS al usuario con el nuevo PIN.' };
   }
 
   // RF29 — Cambiar estado de cuenta.
