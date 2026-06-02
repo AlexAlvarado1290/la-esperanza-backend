@@ -1,0 +1,51 @@
+# Caddyfile de producción para Sistema La Esperanza
+#
+# Caddy se encarga de:
+#   - Obtener y renovar el certificado TLS de Let's Encrypt automáticamente.
+#   - Redirigir HTTP a HTTPS (de fábrica).
+#   - Comprimir respuestas con gzip/zstd.
+#   - Inyectar headers de seguridad razonables.
+#   - Rutear /api/* y /health al backend NestJS y el resto al frontend nginx.
+#
+# El dominio se inyecta desde el .env vía la variable {$DOMAIN}.
+# El email para Let's Encrypt viene de {$LE_EMAIL}.
+
+{
+    email {$LE_EMAIL}
+    # Si necesitás probar sin gastar el rate limit de Let's Encrypt, descomentá:
+    # acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+{$DOMAIN} {
+    encode gzip zstd
+
+    # Headers de seguridad. HSTS empuja a los navegadores a hablar siempre HTTPS.
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options    "nosniff"
+        X-Frame-Options           "DENY"
+        Referrer-Policy           "strict-origin-when-cross-origin"
+        -Server
+    }
+
+    # API REST de NestJS (mantiene el prefijo /api porque el backend lo espera).
+    handle /api/* {
+        reverse_proxy backend:3000
+    }
+
+    # Endpoint /health del backend (excluido del prefijo /api por design).
+    handle /health {
+        reverse_proxy backend:3000
+    }
+
+    # Cualquier otra ruta = SPA del frontend.
+    handle {
+        reverse_proxy frontend:80
+    }
+
+    # Log estructurado para diagnóstico.
+    log {
+        output stdout
+        format json
+    }
+}

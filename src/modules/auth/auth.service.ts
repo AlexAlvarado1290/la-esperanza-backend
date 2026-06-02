@@ -10,7 +10,9 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { JwtService } from '@nestjs/jwt';
 import { EstadoCuenta, NombreRol, Usuario } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
+import { SMS_ADAPTER, SmsAdapter } from '../../common/adapters/sms.adapter';
 import { DomainEvent } from '../../common/events/domain-events';
+import { ForgotPinDto } from './dto/forgot-pin.dto';
 import { LoginDto } from './dto/login.dto';
 import { ChangePinDto } from './dto/change-pin.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
@@ -27,6 +29,7 @@ export class AuthService {
 
   constructor(
     @Inject(USER_REPOSITORY) private readonly users: IUserRepository,
+    @Inject(SMS_ADAPTER) private readonly sms: SmsAdapter,
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
     private readonly events: EventEmitter2,
@@ -155,6 +158,62 @@ export class AuthService {
     });
     const withRol = (await this.users.findById(userId)) as UsuarioConRol;
     return this.toPublicUser({ ...updated, rol: withRol.rol });
+  }
+
+  // RF05 — Recuperación de PIN por SMS. Endpoint público. Para evitar
+  // enumeración de usuarios el response es siempre el mismo, exista o no
+  // el teléfono. Si existe: generamos PIN aleatorio del largo correcto,
+  // lo guardamos con must_change_pin=true y reseteo de bloqueo, y lo enviamos
+  // por SMS. La acción se audita por el patrón Observer (RF37).
+  async forgotPin(dto: ForgotPinDto): Promise<{ message: string }> {
+    const mensajeGenerico = {
+      message:
+        'Si el teléfono está registrado, recibirás un SMS con un PIN temporal en los próximos minutos.',
+    };
+
+    const user = (await this.users.findByTelefono(dto.telefono)) as UsuarioConRol | null;
+    if (!user) return mensajeGenerico;
+
+    // No procesar cuentas bloqueadas: el comité debe reactivarlas primero.
+    if (user.estadoCuenta === EstadoCuenta.BLOQUEADO) {
+      this.events.emit(DomainEvent.AccesoDenegado, {
+        idUsuario: user.idUsuario,
+        accion: 'pin.forgot.denegado',
+        entidad: 'usuario',
+        entidadId: String(user.idUsuario),
+        metadata: { motivo: 'cuenta_bloqueada' },
+      });
+      return mensajeGenerico;
+    }
+
+    const pinLength = user.rol.nombre === NombreRol.ADMIN ? 6 : 4;
+    const max = 10 ** pinLength;
+    const nuevoPin = String(Math.floor(Math.random() * max)).padStart(pinLength, '0');
+    const hash = await bcrypt.hash(nuevoPin, this.bcryptRounds);
+
+    await this.users.updatePin(user.idUsuario, hash, pinLength, true);
+    // RNF10 — un reset también limpia el contador de intentos fallidos.
+    await this.users.updateLoginState(user.idUsuario, {
+      failedLoginAttempts: 0,
+      lockedUntil: null,
+    });
+
+    // El envío del SMS no debe romper el flujo si el proveedor falla; el
+    // adapter ya captura sus errores (ver SmartlaSmsAdapter).
+    await this.sms.sendNotification(
+      user.telefono,
+      `La Esperanza · Tu PIN temporal es ${nuevoPin}. Inicia sesión y cámbialo al entrar.`,
+    );
+
+    this.events.emit(DomainEvent.UsuarioPinReiniciado, {
+      idUsuario: user.idUsuario,
+      accion: 'pin.forgot',
+      entidad: 'usuario',
+      entidadId: String(user.idUsuario),
+      metadata: { canal: 'sms' },
+    });
+
+    return mensajeGenerico;
   }
 
   // RF03 — el logout es client-side (descarta el token); el endpoint solo audita.

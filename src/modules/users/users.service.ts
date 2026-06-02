@@ -29,15 +29,25 @@ export class UsersService {
     this.bcryptRounds = Number(this.config.get('BCRYPT_ROUNDS') ?? 10);
   }
 
-  list(filters: { rol?: NombreRol; estado?: EstadoCuenta; q?: string }) {
-    return this.admin.list(filters);
+  // Elimina campos sensibles antes de devolver al cliente (RNF11): hash del PIN,
+  // contador de intentos fallidos y timestamp de bloqueo no deben salir nunca.
+  private toPublic<T extends { pinHash?: string; failedLoginAttempts?: number; lockedUntil?: Date | null }>(
+    u: T,
+  ): Omit<T, 'pinHash' | 'failedLoginAttempts' | 'lockedUntil'> {
+    const { pinHash: _pinHash, failedLoginAttempts: _f, lockedUntil: _l, ...safe } = u;
+    return safe;
+  }
+
+  async list(filters: { rol?: NombreRol; estado?: EstadoCuenta; q?: string }) {
+    const items = await this.admin.list(filters);
+    return items.map((u) => this.toPublic(u));
   }
 
   async findOne(id: number) {
     const u = await this.admin.findById(id);
     if (!u) throw new NotFoundException('Usuario no encontrado');
     const ind = await this.admin.indicadores(id);
-    return { ...u, indicadores: ind };
+    return { ...this.toPublic(u), indicadores: ind };
   }
 
   // RF26 — Registrar nuevo usuario.
@@ -66,9 +76,9 @@ export class UsersService {
       rol: { connect: { idRol: rol.idRol } },
     });
 
-    // SmsAdapter stub (RF26 — código de verificación).
-    const codigo = String(Math.floor(100000 + Math.random() * 900000));
-    await this.sms.sendVerificationCode(dto.telefono, codigo, 'alta_usuario');
+    // RF26 — Notificar al usuario con su PIN inicial para que pueda iniciar
+    // sesión por primera vez. El SmsAdapter es intercambiable (stub | smartla).
+    await this.sms.sendVerificationCode(dto.telefono, initialPin, 'alta_usuario');
 
     this.events.emit(DomainEvent.UsuarioCreado, {
       idUsuario: actorId,
@@ -80,10 +90,9 @@ export class UsersService {
     });
 
     return {
-      ...created,
-      pinHash: undefined,
+      ...this.toPublic(created),
       pinInicial: initialPin, // visible solo para admin durante el alta
-      mensajeSms: `SMS_STUB code=${codigo} to=${dto.telefono} (revisa la consola del backend)`,
+      mensajeSms: `Se envió un SMS a ${dto.telefono} con el PIN inicial (${initialPin}).`,
     };
   }
 
@@ -100,7 +109,7 @@ export class UsersService {
       valorAntes: { nombreCompleto: existing.nombreCompleto, direccion: existing.direccion },
       valorDespues: { nombreCompleto: updated.nombreCompleto, direccion: updated.direccion },
     });
-    return updated;
+    return this.toPublic(updated);
   }
 
   // RF28 — Reiniciar PIN.
@@ -151,6 +160,6 @@ export class UsersService {
       valorDespues: { estado: dto.estado, motivo: dto.motivo },
       metadata: { idUsuario: id, estado: dto.estado },
     });
-    return updated;
+    return this.toPublic(updated);
   }
 }

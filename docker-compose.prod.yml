@@ -1,0 +1,100 @@
+# docker-compose.prod.yml — Stack productivo del Sistema La Esperanza.
+#
+# Estructura esperada en el VPS:
+#   /opt/esperanza/
+#   ├── backend/   ← este compose vive acá
+#   └── frontend/  ← repo de la-esperanza (la-esperanza)
+#
+# Variables que deben venir del archivo .env (junto al compose):
+#   DOMAIN, LE_EMAIL, POSTGRES_PASSWORD, JWT_SECRET, SMS_API_TOKEN
+#
+# Comando habitual:
+#   docker compose --env-file .env -f docker-compose.prod.yml up -d --build
+
+name: esperanza-prod
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: esperanza-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN}
+      LE_EMAIL: ${LE_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data        # certificados Let's Encrypt
+      - caddy_config:/config
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - esperanza-net
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: https://${DOMAIN}
+    container_name: esperanza-frontend
+    restart: unless-stopped
+    networks:
+      - esperanza-net
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: esperanza-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      LOG_LEVEL: info
+      DATABASE_URL: postgresql://esperanza:${POSTGRES_PASSWORD}@postgres:5432/esperanza?schema=public
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRES_IN: 8h
+      BCRYPT_ROUNDS: 10
+      MAX_LOGIN_ATTEMPTS: 5
+      LOGIN_LOCK_MINUTES: 10
+      SMS_PROVIDER: ${SMS_PROVIDER:-smartla}
+      SMS_API_URL: ${SMS_API_URL:-https://api.smartla.net/smart-messaging-gw/notification}
+      SMS_API_TOKEN: ${SMS_API_TOKEN}
+      SMS_COUNTRY_ID: ${SMS_COUNTRY_ID:-502}
+      CORS_ORIGIN: https://${DOMAIN}
+    networks:
+      - esperanza-net
+
+  postgres:
+    image: postgres:16
+    container_name: esperanza-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: esperanza
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: esperanza
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U esperanza"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - esperanza-net
+
+volumes:
+  caddy_data:
+  caddy_config:
+  postgres_data:
+
+networks:
+  esperanza-net:
+    driver: bridge

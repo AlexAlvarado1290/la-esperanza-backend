@@ -4,6 +4,7 @@ import { CurrentUser, CurrentUserPayload } from '../../common/decorators/current
 import { Public } from '../../common/decorators/public.decorator';
 import { AuthService } from './auth.service';
 import { ChangePinDto } from './dto/change-pin.dto';
+import { ForgotPinDto } from './dto/forgot-pin.dto';
 import { LoginDto } from './dto/login.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 
@@ -18,6 +19,16 @@ export class AuthController {
   @ApiOperation({ summary: 'RF01 — Iniciar sesión con teléfono y PIN' })
   login(@Body() dto: LoginDto) {
     return this.auth.login(dto);
+  }
+
+  @Public()
+  @Post('forgot-pin')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'RF05 — Solicitar PIN temporal por SMS (autoservicio, sin login)',
+  })
+  forgotPin(@Body() dto: ForgotPinDto) {
+    return this.auth.forgotPin(dto);
   }
 
   @ApiBearerAuth()
